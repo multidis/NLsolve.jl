@@ -1,33 +1,40 @@
-using DualNumbers
-
-function autodiff{T <: Real}(f!::Function,
-                             x::Vector{T},
-                             jac_out::Matrix{T},
-                             dual_in,
-                             dual_out)
-    # assume that f! doesn't overwrite the x vector
-    for i in 1:length(x)
-        dual_in[i] = Dual(x[i], zero(T))
-    end
-    for i in 1:length(x)
-        dual_in[i] = Dual(x[i], one(T))
-        f!(dual_in,dual_out)
-        for k in 1:length(dual_out)
-            jac_out[k,i] = epsilon(dual_out[k])
-        end
-        dual_in[i] = Dual(real(dual_in[i]), zero(T))
-    end
-
-end
-
 # generates a function that computes the jacobian of f!(x,fx)
 # assuming that f takes a Vector{T} of length n
 # and writes the result to a Vector{T} of length m
-function autodiff{T <: Real}(f!,::Type{T},n,m)
-    dual_in = Array(Dual{T},n)
-    dual_out = Array(Dual{T},m)
-    function g!(x, jac_out)
-        autodiff(f!,x, jac_out, dual_in, dual_out)
+
+# TODO: Update chunk_size to constant ~10 when https://github.com/JuliaDiff/ForwardDiff.jl/issues/36
+# is resolved
+
+# Compute the chunk size so that the chunk size is smaller than
+# ForwardDiff.tuple_usage_threshold and evenly divides the input length
+function compute_chunk_size(length_x0)
+    chunk_size = ForwardDiff.tuple_usage_threshold
+    while chunk_size > 1
+        if isinteger(length_x0 / chunk_size)
+            break
+        else
+            chunk_size -= 1
+        end
     end
-    return DifferentiableMultivariateFunction(f!,g!)
+    return chunk_size
+end
+
+function autodiff{T <: Real}(f!, ::Type{T}, length_x0)
+
+    cache = ForwardDiffCache()
+    nl_chunk_size = compute_chunk_size(length_x0)
+
+    permf!(yp, xp) = f!(xp, yp)
+    permg! = jacobian(permf!, mutates = true, output_length = length_x0,
+                      chunk_size = nl_chunk_size, cache = cache)
+    permg_allres! = jacobian(permf!, ForwardDiff.AllResults, mutates = true,
+                             output_length = length_x0, chunk_size = nl_chunk_size, cache = cache)
+
+    g!(x, gx) = permg!(gx, x)
+
+    function fg!(x, fx, gx)
+        _, all_results = permg_allres!(gx, x)
+        ForwardDiff.value!(fx, all_results)
+    end
+    return DifferentiableMultivariateFunction(f!, g!, fg!)
 end

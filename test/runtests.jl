@@ -1,5 +1,12 @@
 using NLsolve
 
+if VERSION >= v"0.5-"
+    using Base.Test
+else
+    using BaseTestNext
+    const Test = BaseTestNext
+end
+
 tests = ["2by2.jl",
          "singular.jl",
          "finite_difference.jl",
@@ -9,17 +16,13 @@ tests = ["2by2.jl",
          "autodiff.jl",
          "josephy.jl",
          "difficult_mcp.jl",
-         "sparse.jl"]
+         "sparse.jl",
+         "throws.jl",
+         "f_g_counts.jl",
+         "no_linesearch.jl"]
 
 println("Running tests:")
 
 for test in tests
-    try
-        include(test)
-        println("\t\033[1m\033[32mPASSED\033[0m: $(test)")
-     catch e
-        println("\t\033[1m\033[31mFAILED\033[0m: $(test)")
-        showerror(STDOUT, e, backtrace())
-        rethrow(e)
-     end
+    include(test)
 end

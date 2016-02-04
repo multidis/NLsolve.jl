@@ -9,7 +9,7 @@
 #   MINPACK would test also other initial points which are 10 or 100 times the
 #   original point.
 
-using Compat
+@testset "minpack" begin
 
 function rosenbrock()
     function f!(x::Vector, fvec::Vector)
@@ -188,7 +188,7 @@ function watson(n::Integer)
             for k = 1:n
                 tj = tk
                 for j = k:n
-                    fjac[k,j] += tj*((@compat(Float64(k-1))/ti - temp2)*(@compat(Float64(j-1))/ti - temp2) - temp1)
+                    fjac[k,j] += tj*((Float64(k-1)/ti - temp2)*(Float64(j-1)/ti - temp2) - temp1)
                     tj *= ti
                 end
                 tk *= temp
@@ -492,22 +492,40 @@ alltests = [ rosenbrock(); powell_singular(); powell_badly_scaled(); wood();
             trigonometric(10); variably_dimensioned(10);
             broyden_tridiagonal(10); broyden_banded(10) ]
 
-@printf("%-30s   %5s   %5s   %5s   %14s     %10s\n", "Function", "Dim", "NFEV",
+TESTS_FAIL_NEWTON = ["Trigonometric"]
+
+f_out = open("minpack_results.dat", "w")
+
+@printf("%-45s   %5s   %5s   %5s   %14s     %10s\n", "Function", "Dim", "NFEV",
         "NJEV", "Final inf-norm", "total time")
 println("-"^86)
 
+@printf(f_out, "%-45s   %5s   %5s   %5s   %14s\n", "Function", "Dim", "NFEV",
+        "NJEV", "Final inf-norm")
+println(f_out, "-"^86)
+
+
+
 for (df, initial, name) in alltests
-    tic()
-    r = nlsolve(df, initial, method = :trust_region)
-    tot_time = toq()
-    @printf("%-30s   %5d   %5d   %5d   %14e   %10e\n", name, length(initial),
-            r.f_calls, r.g_calls, r.residual_norm, tot_time)
-    @assert converged(r)
-    # with autodiff
-    tic()
-    r = nlsolve(df.f!, initial, method = :trust_region, autodiff = true)
-    tot_time = toq()
-    @printf("%-30s   %5d   %5d   %5d   %14e   %10e\n", name*"-AD",
-            length(initial), r.f_calls, r.g_calls, r.residual_norm, tot_time)
-    @assert converged(r)
+    for method in (:trust_region, :newton)
+        if method == :newton && name in TESTS_FAIL_NEWTON
+            continue
+        end
+        tot_time = @elapsed r = nlsolve(df, initial, method = method)
+        @printf("%-45s   %5d   %5d   %5d   %14e   %10e\n", name*"-"*string(method), length(initial),
+                r.f_calls, r.g_calls, r.residual_norm, tot_time)
+        @test converged(r)
+        @printf(f_out, "%-45s   %5d   %5d   %5d   %14e\n", name*"-"*string(method), length(initial),
+                r.f_calls, r.g_calls, r.residual_norm)
+        # with autodiff
+        tot_time = @elapsed r_AD = nlsolve(df.f!, initial, method = method, autodiff = true)
+        @printf("%-45s   %5d   %5d   %5d   %14e   %10e\n", name*"-"*string(method)*"-AD",
+                length(initial), r_AD.f_calls, r_AD.g_calls, r_AD.residual_norm, tot_time)
+        @printf(f_out, "%-45s   %5d   %5d   %5d   %14e\n", name*"-"*string(method)*"-AD", length(initial),
+                r_AD.f_calls, r_AD.g_calls, r_AD.residual_norm)
+        @test converged(r_AD)
+    end
+end
+close(f_out)
+
 end

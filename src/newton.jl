@@ -1,3 +1,11 @@
+function no_linesearch!(dfo, xold, p, x, gr, lsr, alpha, mayterminate)
+    @simd for i in eachindex(x)
+        @inbounds x[i] = xold[i] + p[i]
+    end
+    dfo.f(x)
+    return 0.0, 0, 0
+end
+
 macro newtontrace(stepnorm)
     quote
         if tracing
@@ -18,28 +26,6 @@ macro newtontrace(stepnorm)
     end
 end
 
-function create_objective_function(df::AbstractDifferentiableMultivariateFunction,
-                                   T::Type, nn::Integer)
-    fvec2 = Array(T, nn)
-    fjac2 = alloc_jacobian(df, T, nn)
-    function fo(x::Vector{T})
-        df.f!(x, fvec2)
-        return(dot(fvec2, fvec2)/2)
-    end
-    function go!(x::Vector{T}, storage::Vector{T})
-        df.fg!(x, fvec2, fjac2)
-        storage = fjac2'*fvec2
-    end
-    function fgo!(x::Vector{T}, storage::Vector{T})
-        df.fg!(x, fvec2, fjac2)
-        storage = fjac2'*fvec2
-        return(dot(fvec2, fvec2)/2)
-    end
-
-    return(DifferentiableFunction(fo, go!, fgo!))
-end
-
-
 function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
                    initial_x::Vector{T},
                    xtol::T,
@@ -55,6 +41,7 @@ function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
     xold = fill(convert(T, NaN), nn)
     fvec = Array(T, nn)
     fjac = alloc_jacobian(df, T, nn)
+
     p = Array(T, nn)
     g = Array(T, nn)
     gr = Array(T, nn)
@@ -62,14 +49,11 @@ function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
     # Count function calls
     f_calls, g_calls = 0, 0
 
-    df.f!(x, fvec)
+    df.fg!(x, fvec, fjac)
     f_calls += 1
+    g_calls += 1
 
-    i = find(!isfinite(fvec))
-
-    if !isempty(i)
-        error("During the resolution of the non-linear system, the evaluation of the following equation(s) resulted in a non-finite number: $(i)")
-    end
+    check_isfinite(fvec)
 
     it = 0
     x_converged, f_converged, converged = assess_convergence(x, xold, fvec, xtol, ftol)
@@ -82,21 +66,50 @@ function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
 
     tr = SolverTrace()
     tracing = store_trace || show_trace || extended_trace
-    @newtontrace convert(T,NaN)
+    @newtontrace convert(T, NaN)
 
-    dfo = create_objective_function(df, T, nn)
+    # Create objective function for the linesearch.
+    # This function is defined as fo(x) = 0.5 * f(x) ⋅ f(x) and thus
+    # has the gradient ∇fo(x) = ∇f(x) ⋅ f(x)
+    function fo(xlin::Vector)
+        if xlin != xold
+            df.f!(xlin, fvec)
+            f_calls += 1
+        end
+        return(dot(fvec, fvec) / 2)
+    end
 
-    # Keep track of step-sizes
-    foval = dfo.fg!(x, gr)
+    # The line search algorithm will want to first compute ∇fo(xₖ).
+    # We have already computed ∇f(xₖ) and it is possible that it
+    # is expensive to recompute.
+    # We solve this using the already computed ∇f(xₖ)
+    # in case of the line search asking us for the gradient at xₖ.
+    function go!(xlin::Vector, storage::Vector)
+        if xlin == xold
+            copy!(storage, fjac'*fvec)
+        # Else we need to recompute it.
+        else
+            df.fg!(xlin, fvec, fjac)
+            f_calls += 1
+            g_calls += 1
+            copy!(storage, fjac'*fvec)
+        end
+    end
+    function fgo!(xlin::Vector, storage::Vector)
+        go!(xlin, storage)
+        return(dot(fvec, fvec) / 2)
+    end
+
+    dfo = DifferentiableFunction(fo, go!, fgo!)
 
     while !converged && it < iterations
 
         it += 1
 
-        df.g!(x, fjac)
-        g_calls += 1
-
-        g = fjac'*fvec
+        if it > 1
+            df.g!(x, fjac)
+            g_calls += 1
+        end
 
         try
             p = -fjac\fvec
@@ -106,6 +119,7 @@ function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
                 # FIXME: better selection for lambda, see Nocedal & Wright p. 289
                 fjac2 = fjac'*fjac
                 lambda = convert(T,1e6)*sqrt(nn*eps())*norm(fjac2, 1)
+                g = fjac'*fvec
                 p = -(fjac2 + lambda*eye(nn))\g
             else
                 throw(e)
@@ -120,11 +134,7 @@ function newton_{T}(df::AbstractDifferentiableMultivariateFunction,
         alpha, f_calls_update, g_calls_update =
             linesearch!(dfo, xold, p, x, gr, lsr, one(T), mayterminate)
 
-        f_calls += f_calls_update
-        g_calls += g_calls_update
-
-        df.f!(x, fvec)
-        f_calls += 1
+        # fvec is here also updated in the linesearch! so no need to call f again.
 
         x_converged, f_converged, converged = assess_convergence(x, xold, fvec, xtol, ftol)
 
